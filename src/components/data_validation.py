@@ -7,6 +7,7 @@ from src.utils.common.utils import read_yaml_file, write_yaml_file
 
 from scipy.stats import ks_2samp
 import pandas as pd
+from pandas.api.types import is_float_dtype
 import os
 import sys
 
@@ -64,6 +65,20 @@ class DataValidation:
                 for column_config in self._schema_config['columns']
                 for column, data_type in column_config.items()
             }
+
+            def has_expected_data_type(column: str, expected_data_type: str) -> bool:
+                series = df[column]
+                if str(series.dtype) == expected_data_type:
+                    return True
+
+                # Pandas promotes integer columns to float when they contain NaN.
+                return (
+                    expected_data_type.startswith('int')
+                    and series.isna().any()
+                    and is_float_dtype(series.dtype)
+                    and (series.dropna() % 1 == 0).all()
+                )
+
             invalid_data_types = {
                 column: {
                     'expected': expected_data_type,
@@ -71,7 +86,7 @@ class DataValidation:
                 }
                 for column, expected_data_type in expected_data_types.items()
                 if column in df.columns
-                and str(df[column].dtype) != expected_data_type
+                and not has_expected_data_type(column, expected_data_type)
             }
 
             logging.info(f'Columns with invalid data types: {invalid_data_types}')
@@ -84,8 +99,15 @@ class DataValidation:
         return not df.empty
 
     @staticmethod
-    def validate_missing_values(df: pd.DataFrame) -> bool:
-        return not df.isna().any().any()
+    def validate_target_has_no_missing_values(df: pd.DataFrame) -> bool:
+        return TARGET_COLUMN in df.columns and not df[TARGET_COLUMN].isna().any()
+
+    @staticmethod
+    def validate_features_not_entirely_missing(df: pd.DataFrame) -> bool:
+        input_features = df.drop(columns=[TARGET_COLUMN], errors='ignore')
+        entirely_missing_features = input_features.columns[input_features.isna().all()].tolist()
+        logging.info(f'Entirely missing input features: {entirely_missing_features}')
+        return not entirely_missing_features
 
     def validate_duplicate_rows(self, df: pd.DataFrame) -> bool:
         try:
@@ -125,7 +147,8 @@ class DataValidation:
                 'has the required number of columns': self.validate_number_of_columns(df),
                 'has the expected column names': self.validate_column_names(df),
                 'has the expected data types': self.validate_column_data_types(df),
-                'does not contain missing values': self.validate_missing_values(df),
+                f'does not contain missing values in target column {TARGET_COLUMN}': self.validate_target_has_no_missing_values(df),
+                'does not contain entirely missing input features': self.validate_features_not_entirely_missing(df),
                 'does not exceed the duplicate row limit': self.validate_duplicate_rows(df),
                 f'contains target column {TARGET_COLUMN}': self.validate_target_column(df),
                 'contains only allowed values': self.validate_allowed_values(df),
@@ -142,8 +165,8 @@ class DataValidation:
             report = {}
             validation_status = True
             for col in base_df.columns:
-                d1 = base_df[col]
-                d2 = current_df[col]
+                d1 = base_df[col].dropna()
+                d2 = current_df[col].dropna()
                 is_same_dist = ks_2samp(d1, d2) # Compare distribution of two samples
                 drift_status = bool(is_same_dist.pvalue < threshold)
                 if drift_status:

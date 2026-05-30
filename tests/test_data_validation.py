@@ -54,6 +54,16 @@ class TestDataValidation(unittest.TestCase):
         self.assertIsNone(result.invalid_test_file_path)
         self.assertTrue(Path(result.drift_report_file_path).exists())
 
+    def test_imputable_feature_null_is_written_to_validated_directory(self):
+        self.train_df.loc[self.train_df.index[0], 'Prefix_Suffix'] = None
+        self.train_df.to_csv(self.train_path, index=False)
+
+        result = self.create_validator('feature_null_case').initiate_data_validation()
+
+        self.assertTrue(result.validation_status)
+        validated_train_df = pd.read_csv(result.valid_train_file_path)
+        self.assertTrue(validated_train_df['Prefix_Suffix'].isna().any())
+
     def test_schema_failure_is_written_to_invalid_directory(self):
         self.test_df.drop(columns=['Result']).to_csv(self.test_path, index=False)
 
@@ -66,14 +76,31 @@ class TestDataValidation(unittest.TestCase):
         self.assertTrue(Path(result.invalid_test_file_path).exists())
         self.assertIsNone(result.drift_report_file_path)
 
-    def test_quality_checks_reject_nulls_and_values_outside_the_schema(self):
+    def test_quality_checks_allow_imputable_feature_nulls(self):
+        validator = self.create_validator('quality_case')
+        df = self.train_df.copy()
+        df.loc[df.index[0], 'Prefix_Suffix'] = None
+
+        self.assertTrue(validator.validate_column_data_types(df))
+        self.assertTrue(validator.validate_target_has_no_missing_values(df))
+        self.assertTrue(validator.validate_features_not_entirely_missing(df))
+        self.assertTrue(validator.validate_dataframe(df, 'Train'))
+
+    def test_quality_checks_reject_target_nulls_and_values_outside_the_schema(self):
         validator = self.create_validator('quality_case')
         invalid_df = self.train_df.copy()
         invalid_df.loc[invalid_df.index[0], 'URL_Length'] = 99
-        invalid_df.loc[invalid_df.index[1], 'Prefix_Suffix'] = None
+        invalid_df.loc[invalid_df.index[1], 'Result'] = None
 
         self.assertFalse(validator.validate_allowed_values(invalid_df))
-        self.assertFalse(validator.validate_missing_values(invalid_df))
+        self.assertFalse(validator.validate_target_has_no_missing_values(invalid_df))
+
+    def test_quality_checks_reject_entirely_missing_feature(self):
+        validator = self.create_validator('quality_case')
+        invalid_df = self.train_df.copy()
+        invalid_df['Prefix_Suffix'] = None
+
+        self.assertFalse(validator.validate_features_not_entirely_missing(invalid_df))
 
 
 if __name__ == '__main__':
